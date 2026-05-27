@@ -1,0 +1,51 @@
+* ============================================================
+* VARISTOR - MOV z wyraźnym regionem III / high-current upturn
+*
+* Rdzeń MOV:
+*   Icore = ILK * (Vcore/VLK)^A
+*
+* Region III:
+*   Vterminal = Vcore + I*RS_AUTO
+*
+* RS_AUTO dobrane tak, aby terminalnie przejść przez:
+*   VH przy IH
+*
+* Dla VLK=300, ILK=10u, V1M=325, I1M=1m,
+* VH=800, IH=10k wychodzi RS_AUTO ok. 37m.
+* ============================================================
+
+.subckt VARISTOR p n params:
++ VLK=300 ILK=10u
++ V1M=325 I1M=1m
++ VH=800 IH=10k
++ CP=500p LS=0
++ Roff=1G
++ Veps=1m IEPS=1f
++ RSmin=1m
+
+.param ACORE={log(I1M/ILK)/log(V1M/VLK)}
+.param VCORE_H={V1M*(IH/I1M)**(1/ACORE)}
+.param RS_AUTO={(VH-VCORE_H)/IH}
+
+.func VABS(x) {sqrt(x*x + Veps*Veps)}
+.func SGN(x)  {x/VABS(x)}
+
+* Pasożyty zewnętrzne
+Lser p ps {LS}
+
+* Region III / high-current upturn
+* Jeżeli RS_AUTO wyjdzie ujemne, punkty są niespójne.
+* Dla Twoich danych jest dodatnie.
+Rser ps x {RS_AUTO+RSmin}
+
+* Pojemność i upływ
+Cpar x n {CP}
+Riso x n {Roff}
+
+* Rdzeń nieliniowy MOV: leakage + normal varistor region
+Bcore x n I={
++ SGN(V(x,n)) *
++ ILK * (VABS(V(x,n))/VLK)**ACORE
++}
+
+.ends VARISTOR

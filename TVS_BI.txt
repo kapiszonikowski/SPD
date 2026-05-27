@@ -1,0 +1,59 @@
+* ============================================================
+* TVS_BI - bidirectional transient voltage suppressor
+*
+* Model:
+* - leakage below VRWM
+* - avalanche breakdown fitted through VBR/IBR and VCL/IPP
+* - series resistance Rs
+* - lead inductance Ls
+* - junction/parasitic capacitance Cpar
+*
+* Parametry:
+* VRWM  - reverse working/standoff voltage
+* IR    - leakage current at VRWM
+* VBR   - breakdown voltage at IBR
+* IBR   - breakdown test current
+* VCL   - clamping voltage at IPP
+* IPP   - peak pulse current for VCL
+* Rs    - dynamic/high-current series resistance
+* Ls    - lead/layout inductance
+* Cpar  - TVS capacitance
+* ============================================================
+
+.subckt TVS_BI p n params:
++ VRWM=33
++ IR=1u
++ VBR=36.7
++ IBR=1m
++ VCL=53.3
++ IPP=10
++ Rs=50m
++ Ls=1n
++ Cpar=500p
++ Veps=1u
++ Vw=0.2
+
+.param RLK={VRWM/IR}
+.param VA={(VCL-IPP*Rs-VBR)/log(IPP/(2*IBR))}
+
+.func VABS(x)    {sqrt(x*x + Veps*Veps)}
+.func SGN(x)     {x/VABS(x)}
+.func STEPV(x,w) {0.5 + 0.5*tanh(x/w)}
+
+* Pasożyty szeregowe
+Lser p px {Ls}
+Rser px a {Rs}
+
+* Pojemność i upływność
+Cj   a n {Cpar}
+Rlk  a n {RLK}
+
+* Dwukierunkowa lawina
+Bava a n I={
++ SGN(V(a,n)) *
++ 2*IBR *
++ exp((VABS(V(a,n))-VBR)/VA) *
++ STEPV(VABS(V(a,n))-VBR,Vw)
++}
+
+.ends TVS_BI

@@ -1,0 +1,250 @@
+* ============================================================
+* GDT - dynamiczny model gas discharge tube / spark gap
+* 2-pinowy, z progiem zapłonu zależnym od dU/dt
+*
+* Domyślne wartości dobrane pod TDK/EPCOS EM400X 400 V.
+*
+* U1      - DC spark-over voltage
+* U100    - impulse spark-over przy 100 V/us
+* U1000   - impulse spark-over przy 1 kV/us
+* U2      - glow voltage
+* U3      - arc voltage
+* I1      - glow -> arc transition current
+* I3      - arc -> glow return current
+* Ihold   - current needed to sustain ionization
+*
+* Ważne:
+* - I1 zapala łuk.
+* - I3 tylko podtrzymuje już istniejący łuk.
+* - I3 NIE może samodzielnie zapalić łuku.
+* - dU/dt liczone jest z napięcia na zaciskach GDT.
+* ============================================================
+
+.subckt GDT p n params:
++ U1=400 U2=60 U3=10
++ I1=0.3 I3=50m Ihold=50m
++ Rglow=5 Rarc=0.05 Roff=1G
++ Cpar=1p Ls=10n
++ Tion=50n Tdeion=1u
++ Tarc_on=100n Tarc_off=300n
++ Veps=1m Ieps=1n Vsoft=0.2
++ Vw=5 Iw=5m
++ Xignite=1m Xw=0.5m
++ XarcHold=0.5 XarcW=0.05
++ U100=750 U1000=850
++ DV100=100Meg DV1000=1G
++ DVeps=1 TdV=50n ClipW=1m
+
+.func VABS(x)     {sqrt(x*x + Veps*Veps)}
+.func IABS(x)     {sqrt(x*x + Ieps*Ieps)}
+.func STEPV(x,w)  {0.5 + 0.5*tanh(x/w)}
+.func OR01(a,b)   {a + b - a*b}
+.func SOFTPLUS(x) {0.5*(x + sqrt(x*x + Vsoft*Vsoft))}
+.func POSDV(x)    {0.5*(x + sqrt(x*x + DVeps*DVeps))}
+.func SPOS(x,w)   {0.5*(x + sqrt(x*x + w*w))}
+.func SCLAMP01(x) {SPOS(x,ClipW) - SPOS(x-1,ClipW)}
+
+* ------------------------------------------------------------
+* Pasożyty stanu OFF
+* ------------------------------------------------------------
+
+Lser p px {Ls}
+Coff px n {Cpar}
+Riso px n {Roff}
+
+* Wewnętrzny pomiar prądu głównej gałęzi przewodzenia
+Vsense px a 0
+
+* Sygnały pomocnicze napięcia i prądu na właściwym GDT
+Bvp vp 0 V={V(px,n)}
+Bvn vn 0 V={V(n,px)}
+Bim im 0 V={IABS(I(Vsense))}
+
+* ------------------------------------------------------------
+* Dynamiczny próg zapłonu zależny od dU/dt
+*
+* Zakres 0...100 V/us:
+*   interpolacja liniowa U1 -> U100
+*
+* Zakres 100 V/us...1 kV/us:
+*   interpolacja logarytmiczna U100 -> U1000
+*
+* Powyżej 1 kV/us:
+*   próg ograniczony do okolic U1000
+* ------------------------------------------------------------
+
+* dodatnie narastanie napięcia p względem n
+Bdvp_raw dvp_raw 0 V={POSDV(ddt(V(px,n)))}
+
+* ujemne narastanie napięcia, czyli n względem p
+Bdvn_raw dvn_raw 0 V={POSDV(ddt(V(n,px)))}
+
+* filtracja dU/dt
+C_dvpf dvpf 0 1
+B_dvpf dvpf 0 I={(V(dvpf)-V(dvp_raw))/TdV}
+
+C_dvnf dvnf 0 1
+B_dvnf dvnf 0 I={(V(dvnf)-V(dvn_raw))/TdV}
+
+* 0...100 V/us: liniowo
+Bs1p s1p 0 V={SCLAMP01(V(dvpf)/DV100)}
+Bs1n s1n 0 V={SCLAMP01(V(dvnf)/DV100)}
+
+* 100 V/us...1 kV/us: logarytmicznie
+Bs2p s2p 0 V={SCLAMP01(log((V(dvpf)+DVeps)/DV100)/log(DV1000/DV100))}
+Bs2n s2n 0 V={SCLAMP01(log((V(dvnf)+DVeps)/DV100)/log(DV1000/DV100))}
+
+* dynamiczne napięcie zapłonu
+Bu1p u1p 0 V={U1 + (U100-U1)*V(s1p) + (U1000-U100)*V(s2p)}
+Bu1n u1n 0 V={U1 + (U100-U1)*V(s1n) + (U1000-U100)*V(s2n)}
+
+* ------------------------------------------------------------
+* Cele stanów jonizacji
+*
+* Zapłon:
+*   V(px,n) > Ufire+
+*   V(n,px) > Ufire-
+*
+* Podtrzymanie:
+*   xon > Xignite oraz |I| > Ihold
+* ------------------------------------------------------------
+
+Btonp tonp 0 V={
++ OR01(
++   STEPV(V(vp)-V(u1p),Vw),
++   STEPV(V(xonp)-Xignite,Xw)*STEPV(V(im)-Ihold,Iw)
++ )
++}
+
+Btonn tonn 0 V={
++ OR01(
++   STEPV(V(vn)-V(u1n),Vw),
++   STEPV(V(xonn)-Xignite,Xw)*STEPV(V(im)-Ihold,Iw)
++ )
++}
+
+* ------------------------------------------------------------
+* Dodatnia jonizacja xonp
+* xonp = 0  OFF
+* xonp = 1  plazma dodatnia rozwinięta
+* ------------------------------------------------------------
+
+C_xonp xonp 0 1
+
+B_xonp xonp 0 I={
++ (V(xonp)-V(tonp)) /
++ (
++   Tion*STEPV(V(tonp)-V(xonp),Xw)
++   +
++   Tdeion*(1-STEPV(V(tonp)-V(xonp),Xw))
++ )
++}
+
+* ------------------------------------------------------------
+* Ujemna jonizacja xonn
+* ------------------------------------------------------------
+
+C_xonn xonn 0 1
+
+B_xonn xonn 0 I={
++ (V(xonn)-V(tonn)) /
++ (
++   Tion*STEPV(V(tonn)-V(xonn),Xw)
++   +
++   Tdeion*(1-STEPV(V(tonn)-V(xonn),Xw))
++ )
++}
+
+* ------------------------------------------------------------
+* Cele stanów łuku
+*
+* Zapłon łuku:
+*   |I| > I1
+*
+* Podtrzymanie łuku:
+*   xarc > XarcHold oraz |I| > I3
+*
+* I3 NIE może samodzielnie zapalić łuku.
+* ------------------------------------------------------------
+
+Btarcp tarcp 0 V={
++ STEPV(V(xonp)-0.9,0.02) *
++ OR01(
++   STEPV(V(im)-I1,Iw),
++   STEPV(V(xarcp)-XarcHold,XarcW)*STEPV(V(im)-I3,Iw)
++ )
++}
+
+Btarcn tarcn 0 V={
++ STEPV(V(xonn)-0.9,0.02) *
++ OR01(
++   STEPV(V(im)-I1,Iw),
++   STEPV(V(xarcn)-XarcHold,XarcW)*STEPV(V(im)-I3,Iw)
++ )
++}
+
+* ------------------------------------------------------------
+* Dodatni stan łuku xarcp
+* xarcp = 0  glow
+* xarcp = 1  arc
+* ------------------------------------------------------------
+
+C_xarcp xarcp 0 1
+
+B_xarcp xarcp 0 I={
++ (V(xarcp)-V(tarcp)) /
++ (
++   Tarc_on*STEPV(V(tarcp)-V(xarcp),Xw)
++   +
++   Tarc_off*(1-STEPV(V(tarcp)-V(xarcp),Xw))
++ )
++}
+
+* ------------------------------------------------------------
+* Ujemny stan łuku xarcn
+* ------------------------------------------------------------
+
+C_xarcn xarcn 0 1
+
+B_xarcn xarcn 0 I={
++ (V(xarcn)-V(tarcn)) /
++ (
++   Tarc_on*STEPV(V(tarcn)-V(xarcn),Xw)
++   +
++   Tarc_off*(1-STEPV(V(tarcn)-V(xarcn),Xw))
++ )
++}
+
+* ------------------------------------------------------------
+* Główna gałąź przewodzenia
+*
+* Dodatni glow:
+*   I ~= (V - U2)/Rglow
+*
+* Dodatni arc:
+*   I ~= (V - U3)/Rarc
+*
+* Analogicznie dla polaryzacji ujemnej.
+* ------------------------------------------------------------
+
+Bmain a n I={
++ V(xonp) *
++ SOFTPLUS(
++   V(a,n) - ((1 - V(xarcp))*U2 + V(xarcp)*U3)
++ )
++ /
++ (
++   (1 - V(xarcp))*Rglow + V(xarcp)*Rarc
++ )
++ -
++ V(xonn) *
++ SOFTPLUS(
++   -V(a,n) - ((1 - V(xarcn))*U2 + V(xarcn)*U3)
++ )
++ /
++ (
++   (1 - V(xarcn))*Rglow + V(xarcn)*Rarc
++ )
++}
+
+.ends GDT
